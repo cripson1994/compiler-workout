@@ -80,6 +80,7 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
+
 let suffix = function
   | "<" -> "l"
   | "<=" -> "le"
@@ -88,44 +89,43 @@ let suffix = function
   | ">=" -> "ge"
   | ">" -> "g"
   | _ -> failwith "unknow operator"
-
 let rec compile env scode =
-  let onstack = function | S _ -> true | _ -> false in
+  let onReg = function | R _ -> true | _ -> false in
     match scode with
-      | [] -> env, []
+      | [] -> (env, [])
       | instr :: scode' ->
         let env, code' =
           match instr with
           | CONST n -> let s, env = env#allocate in (env, [Mov (L n, s)])
-          | LD x -> let s, env = (env#global x)#allocate in env, (if onstack s
-              then [Mov (M (env#loc x), eax); Mov (eax, s)]
-              else [Mov (M (env#loc x), s)]
+          | LD x -> let s, env = (env#global x)#allocate in env, (if onReg s
+              then [Mov (M (env#loc x), s)]
+              else [Mov (M (env#loc x), eax); Mov (eax, s)]
             )
           | ST x -> let s, env = (env#global x)#pop in env, [Mov (s, M (env#loc x))]
           | READ -> let s, env = env#allocate in env, [Call "Lread"; Mov (eax, s)]
           | WRITE -> let s, env = env#pop in env, [Push s; Call "Lwrite"; Pop eax]
 
-          | BINOP op -> let x, y, env = env#pop2 in env#push y, (match op with
-              | "*" | "+" | "-" -> if onstack y
-                then [Mov (y, eax); Binop (op, x, eax); Mov (eax, y)]
-                else [Binop (op, x, y)]
-              | "/" | "%" -> [Mov (y, eax); Cltd; IDiv x; Mov ((match op with
+          | BINOP op -> let y, x, env = env#pop2 in env#push x, (match op with
+              | "+" | "-" | "*" -> if onReg x
+                then [Binop (op, y, x)]
+                else [Mov (x, edx); Binop (op, y, edx); Mov (edx, x)]
+              | "/" | "%" -> [Mov (x, eax); Cltd; IDiv y; Mov ((match op with
                   | "/" -> eax
                   | _ -> edx
-                ), y)]
-              | "<=" | "<" | ">=" | ">" | "==" | "!=" -> if onstack y
+                ), x)]
+              | "<" | "<=" | ">" | ">=" | "==" | "!=" -> if onReg x
                 then [Binop ("^", eax, eax); Binop ("cmp", y, x);
-                      Set (suffix op, "%al"); Mov (eax, y)]
-                else [Binop ("^", eax, eax); Mov (x, edx); Binop ("cmp", edx, y);
-                      Set (suffix op, "%al"); Mov (eax, y)]
-              | "!!" -> if onstack y
-                then [Binop (op, y, x); Mov (L 0, eax);
-                      Set ("ne", "%al"); Mov (eax, y)]
-                else [Mov (y, eax); Binop (op, x, eax); Mov (L 0, eax);
-                      Set ("ne", "%al"); Mov (eax, y)]
+                      Set (suffix op, "%al"); Mov (eax, x)]
+                else [Binop ("^", eax, eax); Mov (x, edx); Binop ("cmp", y, edx);
+                      Set (suffix op, "%al"); Mov (eax, x)]
+              | "!!" -> if onReg x
+                then [Binop (op, y, x); Mov (L 0, edx);
+                      Set ("ne", "%dl"); Mov (edx, x)]
+                else [Mov (x, eax); Binop (op, y, eax); Mov (L 0, edx);
+                      Set ("ne", "%dl"); Mov (edx, x)]
               | "&&" -> [Mov (L 0, eax); Binop ("cmp", eax, x); Set ("ne", "%al");
                          Mov (L 0, edx); Binop ("cmp", edx, y); Set ("ne", "%dl");
-                         Binop ("&&", eax, edx); Mov (edx, y)]
+                         Binop ("&&", eax, edx); Mov (edx, x)]
               )
         in let env', code'' = compile env scode'
           in env', code' @ code''
