@@ -146,7 +146,7 @@ module Stmt =
           then eval conf (Seq (st, While (expr, st)))
           else eval conf Skip
         | conf, Repeat (expr, st) -> let (s', i', o') = eval conf st
-          in if ((Expr.eval s' expr) != 0)
+          in if ((Expr.eval s' expr) == 0)
             then eval (s', i', o') (Repeat (expr, st))
             else eval (s', i', o') Skip
 
