@@ -3,20 +3,20 @@
 (* The registers: *)
 let regs = [|"%ebx"; "%ecx"; "%esi"; "%edi"; "%eax"; "%edx"; "%ebp"; "%esp"|]
 
-(* We can not freely operate with all register; only 3 by now *)                    
+(* We can not freely operate with all register; only 3 by now *)
 let num_of_regs = Array.length regs - 5
 
 (* We need to know the word size to calculate offsets correctly *)
 let word_size = 4
 
 (* We need to distinguish the following operand types: *)
-type opnd = 
+type opnd =
 | R of int     (* hard register                    *)
 | S of int     (* a position on the hardware stack *)
 | M of string  (* a named memory location          *)
 | L of int     (* an immediate operand             *)
 
-(* For convenience we define the following synonyms for the registers: *)         
+(* For convenience we define the following synonyms for the registers: *)
 let ebx = R 0
 let ecx = R 1
 let esi = R 2
@@ -34,7 +34,7 @@ type instr =
 (* x86 integer division, see instruction set reference  *) | IDiv  of opnd
 (* see instruction set reference                        *) | Cltd
 (* sets a value from flags; the first operand is the    *) | Set   of string * string
-(* suffix, which determines the value being set, the    *)                     
+(* suffix, which determines the value being set, the    *)
 (* the second --- (sub)register name                    *)
 (* pushes the operand on the hardware stack             *) | Push  of opnd
 (* pops from the hardware stack to the operand          *) | Pop   of opnd
@@ -43,7 +43,7 @@ type instr =
 (* a label in the code                                  *) | Label of string
 (* a conditional jump                                   *) | CJmp  of string * string
 (* a non-conditional jump                               *) | Jmp   of string
-                                                               
+
 (* Instruction printer *)
 let show instr =
   let binop = function
@@ -51,7 +51,7 @@ let show instr =
   | "-"   -> "subl"
   | "*"   -> "imull"
   | "&&"  -> "andl"
-  | "!!"  -> "orl" 
+  | "!!"  -> "orl"
   | "^"   -> "xorl"
   | "cmp" -> "cmpl"
   | _     -> failwith "unknown binary operator"
@@ -86,9 +86,59 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let compile _ = failwith "Not Implemented Yet"
+let suffix = function
+    | "<" -> "l"
+    | "<=" -> "le"
+    | "==" -> "e"
+    | "!=" -> "ne"
+    | ">=" -> "ge"
+    | ">" -> "g"
+    | _ -> failwith "unknow operator"
+let rec compile env scode =
+  let onReg = function | R _ -> true | _ -> false in
+    match scode with
+      | [] -> (env, [])
+      | instr :: scode' ->
+        let env, code' =
+          match instr with
+          | CONST n -> let s, env = env#allocate in (env, [Mov (L n, s)])
+          | LD x -> let s, env = (env#global x)#allocate in env, (if onReg s
+              then [Mov (M (env#loc x), s)]
+              else [Mov (M (env#loc x), eax); Mov (eax, s)]
+            )
+          | ST x -> let s, env = (env#global x)#pop in env, [Mov (s, M (env#loc x))]
+          | READ -> let s, env = env#allocate in env, [Call "Lread"; Mov (eax, s)]
+          | WRITE -> let s, env = env#pop in env, [Push s; Call "Lwrite"; Pop eax]
 
-(* A set of strings *)           
+          | BINOP op -> let y, x, env = env#pop2 in env#push x, (match op with
+              | "+" | "-" | "*" -> if onReg x
+                then [Binop (op, y, x)]
+                else [Mov (x, edx); Binop (op, y, edx); Mov (edx, x)]
+              | "/" | "%" -> [Mov (x, eax); Cltd; IDiv y; Mov ((match op with
+                  | "/" -> eax
+                  | _ -> edx
+                ), x)]
+              | "<" | "<=" | ">" | ">=" | "==" | "!=" -> if onReg x
+                then [Binop ("^", eax, eax); Binop ("cmp", y, x);
+                      Set (suffix op, "%al"); Mov (eax, x)]
+                else [Binop ("^", eax, eax); Mov (x, edx); Binop ("cmp", y, edx);
+                      Set (suffix op, "%al"); Mov (eax, x)]
+              | "!!" -> if onReg x
+                then [Binop (op, y, x); Mov (L 0, edx);
+                      Set ("ne", "%dl"); Mov (edx, x)]
+                else [Mov (x, eax); Binop (op, y, eax); Mov (L 0, edx);
+                      Set ("ne", "%dl"); Mov (edx, x)]
+              | "&&" -> [Mov (L 0, eax); Binop ("cmp", eax, x); Set ("ne", "%al");
+                         Mov (L 0, edx); Binop ("cmp", edx, y); Set ("ne", "%dl");
+                         Binop ("&&", eax, edx); Mov (edx, x)]
+              )
+           | LABEL l -> env, [Label l]
+           | JMP l -> env, [Jmp l]
+           | CJMP (cond, l) -> let s, env = env#pop in env, [Binop ("cmp", L 0, s); CJmp (cond, l)]
+        in let env', code'' = compile env scode'
+          in env', code' @ code''
+
+(* A set of strings *)
 module S = Set.Make (String)
 
 (* Environment implementation *)
@@ -99,10 +149,10 @@ class env =
     val stack       = []       (* symbolic stack                    *)
 
     (* gets a name for a global variable *)
-    method loc x = "global_" ^ x                                 
+    method loc x = "global_" ^ x
 
     (* allocates a fresh position on a symbolic stack *)
-    method allocate =    
+    method allocate =
       let x, n =
 	let rec allocate' = function
 	| []                            -> ebx     , 0
@@ -130,17 +180,17 @@ class env =
     (* gets the number of allocated stack slots *)
     method allocated = stack_slots
 
-    (* gets all global variables *)      
+    (* gets all global variables *)
     method globals = S.elements globals
   end
 
 (* Compiles a unit: generates x86 machine code for the stack program and surrounds it
    with function prologue/epilogue
 *)
-let compile_unit env scode =  
+let compile_unit env scode =
   let env, code = compile env scode in
-  env, 
-  ([Push ebp; Mov (esp, ebp); Binop ("-", L (word_size*env#allocated), esp)] @ 
+  env,
+  ([Push ebp; Mov (esp, ebp); Binop ("-", L (word_size*env#allocated), esp)] @
    code @
    [Mov (ebp, esp); Pop ebp; Binop ("^", eax, eax); Ret]
   )
@@ -172,4 +222,3 @@ let build stmt name =
   close_out outf;
   let inc = try Sys.getenv "RC_RUNTIME" with _ -> "../runtime" in
   Sys.command (Printf.sprintf "gcc -m32 -o %s %s/runtime.o %s.s" name inc name)
- 
